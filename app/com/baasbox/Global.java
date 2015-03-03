@@ -33,10 +33,11 @@ import org.apache.commons.lang3.math.NumberUtils;
 import play.Application;
 import play.Configuration;
 import play.GlobalSettings;
-import play.Logger;
+import com.baasbox.service.logging.BaasBoxLogger;
 import play.Play;
 import play.api.mvc.EssentialFilter;
 import play.core.j.JavaResultExtractor;
+import play.filters.gzip.GzipFilter;
 import play.libs.F;
 import play.libs.Json;
 import play.mvc.Http.RequestHeader;
@@ -291,7 +292,7 @@ public class Global extends GlobalSettings {
 		if (!StringUtils.isEmpty(callId)) result.put("call_id",callId);
 	}
 	
-	private ObjectNode prepareError(RequestHeader request, String error) {
+	public ObjectNode prepareError(RequestHeader request, String error) {
 		ObjectNode result = Json.newObject();
 		ObjectMapper mapper = new ObjectMapper();
 			result.put("result", "error");
@@ -310,7 +311,7 @@ public class Global extends GlobalSettings {
 		  result.put("http_code", 400);
 		  SimpleResult resultToReturn =  badRequest(result);
 		  try {
-			if (Logger.isDebugEnabled()) Logger.debug("Global.onBadRequest:\n  + result: \n" + result.toString() + "\n  --> Body:\n" + result.toString(),"UTF-8");
+			if (BaasBoxLogger.isDebugEnabled()) BaasBoxLogger.debug("Global.onBadRequest:\n  + result: \n" + result.toString() + "\n  --> Body:\n" + result.toString(),"UTF-8");
 		  }finally{
 			  return F.Promise.pure (resultToReturn);
 		  }
@@ -324,7 +325,7 @@ public class Global extends GlobalSettings {
 		  result.put("http_code", 404);
 		  SimpleResult resultToReturn= notFound(result);
 		  try {
-			  if (Logger.isDebugEnabled()) Logger.debug("Global.onBadRequest:\n  + result: \n" + result.toString() + "\n  --> Body:\n" + new String(JavaResultExtractor.getBody(resultToReturn),"UTF-8"));
+			  if (BaasBoxLogger.isDebugEnabled()) BaasBoxLogger.debug("Global.onBadRequest:\n  + result: \n" + result.toString() + "\n  --> Body:\n" + new String(JavaResultExtractor.getBody(resultToReturn),"UTF-8"));
 		  }finally{
 			  return F.Promise.pure (resultToReturn);
 		  }
@@ -340,7 +341,7 @@ public class Global extends GlobalSettings {
 		  error(ExceptionUtils.getFullStackTrace(throwable));
 		  SimpleResult resultToReturn= internalServerError(result);
 		  try {
-			  if (Logger.isDebugEnabled()) Logger.debug("Global.onBadRequest:\n  + result: \n" + result.toString() + "\n  --> Body:\n" + new String(JavaResultExtractor.getBody(resultToReturn),"UTF-8"));
+			  if (BaasBoxLogger.isDebugEnabled()) BaasBoxLogger.debug("Global.onBadRequest:\n  + result: \n" + result.toString() + "\n  --> Body:\n" + new String(JavaResultExtractor.getBody(resultToReturn),"UTF-8"));
 		  } finally{
 			  return F.Promise.pure (resultToReturn);
 		  }
@@ -350,7 +351,7 @@ public class Global extends GlobalSettings {
 	@Override 
 	public <T extends EssentialFilter> Class<T>[] filters() {
 		
-		return new Class[]{com.baasbox.filters.LoggingFilter.class};
+		return new Class[]{GzipFilter.class,com.baasbox.filters.LoggingFilter.class};
 	}
 
 

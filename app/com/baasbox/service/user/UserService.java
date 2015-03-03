@@ -19,6 +19,7 @@ package com.baasbox.service.user;
 
 import java.net.URL;
 import java.security.InvalidParameterException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -38,10 +39,12 @@ import org.apache.commons.mail.EmailException;
 import org.apache.commons.mail.HtmlEmail;
 import org.stringtemplate.v4.ST;
 
-import play.Logger;
+import com.baasbox.service.logging.BaasBoxLogger;
+import play.libs.Crypto;
 
 import com.baasbox.BBConfiguration;
 import com.baasbox.configuration.Application;
+import com.baasbox.configuration.Internal;
 import com.baasbox.configuration.PasswordRecovery;
 import com.baasbox.dao.GenericDao;
 import com.baasbox.dao.LinkDao;
@@ -50,6 +53,7 @@ import com.baasbox.dao.PermissionsHelper;
 import com.baasbox.dao.ResetPwdDao;
 import com.baasbox.dao.RoleDao;
 import com.baasbox.dao.UserDao;
+import com.baasbox.dao.exception.EmailAlreadyUsedException;
 import com.baasbox.dao.exception.InvalidModelException;
 import com.baasbox.dao.exception.ResetPasswordException;
 import com.baasbox.dao.exception.SqlInjectionException;
@@ -150,7 +154,7 @@ public class UserService {
 			JsonNode privateAttributes,
 			JsonNode friendsAttributes,
 			JsonNode appUsersAttributes,
-			boolean generated) throws InvalidJsonException, UserAlreadyExistsException{
+			boolean generated) throws InvalidJsonException, UserAlreadyExistsException, EmailAlreadyUsedException{
 		return signUp (
 				username,
 				password,
@@ -237,7 +241,7 @@ public class UserService {
             JsonNode nonAppUserAttributes,
             JsonNode privateAttributes,
             JsonNode friendsAttributes,
-            JsonNode appUsersAttributes,boolean generated) throws InvalidJsonException,UserAlreadyExistsException{
+            JsonNode appUsersAttributes,boolean generated) throws InvalidJsonException,UserAlreadyExistsException, EmailAlreadyUsedException{
 			
 			if (StringUtils.isEmpty(username)) throw new IllegalArgumentException("username cannot be null or empty");
 			if (StringUtils.isEmpty(password)) throw new IllegalArgumentException("password cannot be null or empty");
@@ -245,6 +249,10 @@ public class UserService {
 			ODatabaseRecordTx db =  DbHelper.getConnection();
 			ODocument profile=null;
 			UserDao dao = UserDao.getInstance();
+			if (privateAttributes!=null && privateAttributes.has("email")) {
+				boolean checkEmail=dao.emailIsAlreadyUsed((String) privateAttributes.findValuesAsText("email").get(0));
+				if (checkEmail) throw new EmailAlreadyUsedException("The email provided is already in use by another user");
+			}
 			try{
 			    //because we have to create an OUser record and a User Object, we need a transaction
 			
@@ -439,10 +447,7 @@ public class UserService {
 			JsonNode privateAttributes, JsonNode friendsAttributes,
 			JsonNode appUsersAttributes) throws InvalidJsonException,Exception{
 		try{
-			ORole newORole=RoleDao.getRole(role);
-			if (newORole==null) throw new InvalidParameterException(role + " is not a role");
-			if (!RoleService.isAssignable(newORole)) throw new RoleIsNotAssignableException("Role " + role + " is not assignable");
-			ORID newRole=newORole.getDocument().getIdentity();
+			DbHelper.requestTransaction();
 			UserDao udao=UserDao.getInstance();
 			ODocument profile=udao.getByUserName(username);
 			if (profile==null) throw new InvalidParameterException(username + " is not a user");
@@ -458,19 +463,28 @@ public class UserService {
 					break;
 				}
 			}
-			ORole oldORole=RoleDao.getRole(oldRole);
+			
 			//TODO: update role
-			OUser ouser=DbHelper.getConnection().getMetadata().getSecurity().getUser(username);
-			ouser.getRoles().remove(oldORole);
-			ouser.addRole(newORole);
-			ouser.save();
+			if (role!=null){
+				ORole newORole=RoleDao.getRole(role);
+				if (newORole==null) throw new InvalidParameterException(role + " is not a role");
+				if (!RoleService.isAssignable(newORole)) throw new RoleIsNotAssignableException("Role " + role + " is not assignable");
+				ORID newRole=newORole.getDocument().getIdentity();
+				ORole oldORole=RoleDao.getRole(oldRole);
+				OUser ouser=DbHelper.getConnection().getMetadata().getSecurity().getUser(username);
+				ouser.getRoles().remove(oldORole);
+				ouser.addRole(newORole);
+				ouser.save();
+			}
 			profile.save();
 			profile.reload();
-
+			DbHelper.commitTransaction();
 			return profile;
 		}catch (OSerializationException e){
+			DbHelper.rollbackTransaction();
 			throw new InvalidJsonException(e);
 		}catch (Exception e){
+			DbHelper.rollbackTransaction();
 			throw e;
 		}
 	}//updateProfile with role
@@ -489,7 +503,7 @@ public class UserService {
 		UserDao udao=UserDao.getInstance();
 		ODocument user = udao.getByUserName(username);
 		if(user==null){
-			if (Logger.isDebugEnabled()) Logger.debug("User " + username + " does not exist");
+			if (BaasBoxLogger.isDebugEnabled()) BaasBoxLogger.debug("User " + username + " does not exist");
 			throw new UserNotFoundException("User " + username + " does not exist");
 		}
 		db.getMetadata().getSecurity().getUser(username).setPassword(newPassword).save();
@@ -588,7 +602,7 @@ public class UserService {
 			email.addTo(userEmail);
 
 			email.setSubject(emailSubject);
-			if (Logger.isDebugEnabled()) {
+			if (BaasBoxLogger.isDebugEnabled()) {
 				StringBuilder logEmail = new StringBuilder()
 						.append("HostName: ").append(email.getHostName()).append("\n")
 						.append("SmtpPort: ").append(email.getSmtpPort()).append("\n")
@@ -617,15 +631,15 @@ public class UserService {
 
 						
 						.append("SentDate: ").append(email.getSentDate()).append("\n");
-				Logger.debug("Password Recovery is ready to send: \n" + logEmail.toString());
+				BaasBoxLogger.debug("Password Recovery is ready to send: \n" + logEmail.toString());
 			}
 			email.send();
 
 		}  catch (EmailException authEx){
-			Logger.error("ERROR SENDING MAIL:" + ExceptionUtils.getStackTrace(authEx));
+			BaasBoxLogger.error("ERROR SENDING MAIL:" + ExceptionUtils.getStackTrace(authEx));
 			throw new PasswordRecoveryException (errorString + " Could not reach the mail server. Please contact the server administrator");
 		}  catch (Exception e) {
-			Logger.error("ERROR SENDING MAIL:" + ExceptionUtils.getStackTrace(e));
+			BaasBoxLogger.error("ERROR SENDING MAIL:" + ExceptionUtils.getStackTrace(e));
 			throw new Exception (errorString,e);
 		}
 
@@ -654,7 +668,7 @@ public class UserService {
 				user.field(UserDao.ATTRIBUTES_SYSTEM,systemProps);
 				systemProps.save();
 				user.save();
-				if (Logger.isDebugEnabled()) Logger.debug("saved tokens for user ");
+				if (BaasBoxLogger.isDebugEnabled()) BaasBoxLogger.debug("saved tokens for user ");
 				DbHelper.commitTransaction();
 			}
 		}catch(Exception e){
@@ -689,7 +703,7 @@ public class UserService {
 			registeredUserProp.field("_social",socialdata);
 			registeredUserProp.save();
 			user.save();
-			if (Logger.isDebugEnabled()) Logger.debug("saved tokens for user ");
+			if (BaasBoxLogger.isDebugEnabled()) BaasBoxLogger.debug("saved tokens for user ");
 			DbHelper.commitTransaction();
 
 		}catch(Exception e){
@@ -809,15 +823,48 @@ public class UserService {
                BBConfiguration.getBaasBoxUsername().equals(username);
     }
 
-	public static void changeUsername(String currentUsername,String newUsername) throws UserNotFoundException {
+    public static boolean isSocialAccount(String username) throws SqlInjectionException {
+    	ODocument user = getUserProfilebyUsername(username);
+    	Boolean generated = (Boolean)user.field(UserDao.GENERATED_USERNAME);
+		if (generated==null) return false;
+        return generated.booleanValue();
+    }
+    
+	public static String generateFakeUserPassword(String username,Date signupDate){
+		String bbid=Internal.INSTALLATION_ID.getValueAsString();
+		String password = Crypto.sign(username+new SimpleDateFormat("ddMMyyyyHHmmss").format(signupDate)+bbid);
+		return password;
+	}
+
+	public static void changeUsername(String currentUsername,String newUsername) throws UserNotFoundException, SqlInjectionException, OpenTransactionException {
 		DbHelper.reconnectAsAdmin();
-		//change the username
-		UserDao.getInstance().changeUsername(currentUsername,newUsername);
-		//change all the reference in _author fields (this should be placed in a background task)
-		NodeDao.updateAuthor(currentUsername, newUsername);
-		LinkDao.updateAuthor(currentUsername, newUsername);
-		DbHelper.close(DbHelper.getConnection());
+		try{
+			//this must be done in case of fake username (social login)
+			boolean changeThePasswordToo=isSocialAccount(currentUsername);
+			//change the username
+			UserDao.getInstance().changeUsername(currentUsername,newUsername);
+			if (changeThePasswordToo){
+				ODocument user = getUserProfilebyUsername(newUsername);
+				Date signupDate = (Date)user.field(UserDao.USER_SIGNUP_DATE);
+				changePassword(newUsername, generateFakeUserPassword(newUsername, signupDate));
+			}
+			//change all the reference in _author fields (this should be placed in a background task)
+			NodeDao.updateAuthor(currentUsername, newUsername);
+			LinkDao.updateAuthor(currentUsername, newUsername);
+		}catch(UserNotFoundException | SqlInjectionException| OpenTransactionException e){
+			throw e;
+		}finally {
+			DbHelper.close(DbHelper.getConnection());
+		}
 		//warning! from this point there is no database available!
 	}
 	
+ 	public static boolean isAnAdmin(String username){
+		List<ODocument> res=(List<ODocument>) DbHelper.genericSQLStatementExecute(
+				"select count(*) from (traverse orole.inheritedRole from (select roles from ouser where name=?)) where name=\"administrator\""
+				, new Object[]{username});
+ 		if ((res.get(0)).field("count").equals(1L)) return true;
+ 		return false;
+ 	}
+
 }
